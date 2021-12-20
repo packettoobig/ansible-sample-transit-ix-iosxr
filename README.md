@@ -2,4 +2,4 @@
 
 Sample IXP and Transit automation using the IOS-XR platform
 
-See associated [blogpost](https://packettoobig.net/ixp-transit-automation-iosxr/)
+See related [blogpost](https://packettoobig.net/ixp-transit-automation-iosxr/)
