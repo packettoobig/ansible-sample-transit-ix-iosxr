@@ -1,0 +1,30 @@
+!*.gitkeep
+
+### Vim ###
+*.sw*
+
+### Pycharm ###
+.idea
+
+### python ###
+*.pyc
+
+### tox ###
+.tox
+
+### Ansible ###
+*.retry
+
+### OSX ###
+*.DS_Store
+
+# Thumbnails
+._*
+
+#temporary device configs
+#configurations/*
+!configurations/.gitkeep
+
+#backup files
+backup/*
+!backup/.gitkeep

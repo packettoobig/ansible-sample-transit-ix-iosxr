@@ -1,0 +1,13 @@
+#peeringdb_api_key: 'REPLACE.ME'
+
+desirable_ixp_neighbors:
+  - '15169' #Google
+  - '714' #Apple
+  - '32934' #Facebook
+  - '16509' #Amazon
+  - '8075' #Microsoft
+  - '13335' #Cloudflare
+  - '20940' #Akamai
+  - '2906' #Netflix
+  - '6939' #Hurricane Electric
+

@@ -1,0 +1,28 @@
+---
+router_id: 192.0.2.1
+
+ixp:
+  - name: 'DE-CIX Frankfurt'
+    shortname: 'decix_fra'
+    peeringdb_id: '31'
+    rs_asn: 6695
+    rs_addresses:
+      - '80.81.192.157'
+      - '80.81.193.157'
+      - '2001:7f8::1a27:5051:c09d'
+      - '2001:7f8::1a27:5051:c19d'
+
+transits:
+  - name: "Twelve99/TSIC"
+    shortname: tsic
+    asn: 1299
+    addresses:
+      - '192.0.2.1'
+      - '2001:db8:0:beef::1'
+
+  - name: "Lumen/CenturyLink/Level3"
+    shortname: level3
+    asn: 3356
+    addresses:
+      - '198.51.100.1'
+      - '2001:db8:1:face::1'

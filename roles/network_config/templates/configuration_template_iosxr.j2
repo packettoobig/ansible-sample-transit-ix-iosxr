@@ -1,0 +1,496 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+
+{# V4 bgpq3/4 results #}
+{% if ixp is defined and irr is defined %}
+  {% for result in irr.results %}
+    {% for data in result.message.irrPrefix %}
+      {% if loop.first and data.prefix | ipv4 %}
+prefix-set PS-IRR-AS{{ result.item.item.0 }}-V4
+      {% elif loop.first and data.prefix | ipv6 %}
+prefix-set PS-IRR-AS{{ result.item.item.0 }}-V6
+      {% endif %}
+      {% if data.exact | bool %}
+        {% if not loop.last %}
+  {{ data.prefix }},
+        {% else %}
+  {{ data.prefix }}
+        {% endif %}
+      {% elif data.greaterEqual is defined and data.greaterEqual | int and data.lessEqual is defined and data.lessEqual | int %}
+        {% if not loop.last %}
+  {{ data.prefix }} ge {{ data.greaterEqual }} le {{ data.lessEqual }},
+        {% else %}
+  {{ data.prefix }} ge {{ data.greaterEqual }} le {{ data.lessEqual }}
+        {% endif %}
+      {% elif data.greaterEqual is not defined and data.lessEqual is defined and data.lessEqual | int %}
+        {% if not loop.last %}
+  {{ data.prefix }} le {{ data.lessEqual }},
+        {% else %}
+  {{ data.prefix }} le {{ data.lessEqual }}
+        {% endif %}
+      {% elif data.greaterEqual is defined and data.greaterEqual | int and data.lessEqual is not defined %}
+        {% if not loop.last %}
+  {{ data.prefix }} ge {{ data.lessEqual }},
+        {% else %}
+  {{ data.prefix }} ge {{ data.lessEqual }}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+end-set
+!
+  {% endfor %}
+{% endif %}
+{# Local loop here, there is probably a better solution #}
+{% if ixp is defined or transits is defined %}
+  {% for result in local_as_irr.results %}
+    {% for data in result.message.irrPrefix %}
+      {% if loop.first and data.prefix | ipv4 %}
+prefix-set PS-IRR-AS{{ local_as }}-V4
+      {% elif loop.first and data.prefix | ipv6 %}
+prefix-set PS-IRR-AS{{ local_as }}-V6
+      {% endif %}
+      {% if data.exact | bool %}
+        {% if not loop.last %}
+  {{ data.prefix }},
+        {% else %}
+  {{ data.prefix }}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+end-set
+!
+  {% endfor %}
+prefix-set PS-STD-BOGONS-V4
+  {% for line in bogonv4.content.splitlines() %}
+      {% if not loop.last and line | ipv4 %}
+  {{ line }} le 32,
+      {% elif loop.last and line | ipv4 %}
+  {{ line }} le 32
+      {% else %}
+  #{{ line }}
+      {% endif %}
+  {% endfor %}
+end-set
+!
+{#
+The v6 fullbogon is too large for the config (~128000 in dec 2021)
+v4 fullbogons is only ~1550 prefixes
+Creating a manual (kinda) summarized v6 bogon list instead
+#}
+prefix-set PS-STD-BOGONS-V6
+  ::/0,
+  ::/8 le 128,
+  100::/8 le 128,
+  200::/7 le 128,
+  400::/6 le 128,
+  800::/5 le 128,
+  1000::/4 le 128,
+  2000::/16 le 128,
+  2001::/23 le 128,
+  2001:db8::/32 le 128,
+  4000::/2 le 128,
+  8000::/1 le 128
+end-set
+!
+{% endif %}
+
+{# ASN ASP set #}
+{# Taken from : https://github.com/as2914/bogon-asn-filters/tree/master/README.md #}
+{% if ixp is defined or transits is defined %}
+as-path-set ASPS-STD-BOGONS
+  # RFC7607
+  ios-regex '_0_',
+  # 2 to 4 byte ASN migrations
+  passes-through '23456',
+  # RFC5398
+  passes-through '[64496..64511]',
+  passes-through '[65536..65551]',
+  # RFC6996
+  passes-through '[64512..65534]',
+  passes-through '[4200000000..4294967294]',
+  # RFC7300
+  passes-through '65535',
+  passes-through '4294967295',
+  # IANA reserved
+  passes-through '[65552..131071]'
+end-set
+!
+{% endif %}
+{% if bgp_communities is defined and bgp_communities is iterable %}
+  {% for community in bgp_communities %}
+    {% if community.documentational_only is not defined or community.documentational_only is not true %}
+community-set {{ community.name }}
+{# Equivalent of an IOS remark #}
+  # {{ community.description }}
+  {{ community.community }}
+end-set
+!
+    {% endif %}
+  {% endfor %}
+{% endif %}
+route-policy RP-STD-PASS
+  pass
+end-policy
+!
+route-policy RP-STD-DROP
+  drop
+end-policy
+!
+{% if ixp is defined or transits is defined %}
+route-policy RP-STD-BOGONS-ASN
+  if as-path in ASPS-STD-BOGONS then
+    drop
+  endif
+end-policy
+!
+route-policy RP-STD-ASPATH-LENGTH
+  if as-path length ge 100 then
+    drop
+  endif
+end-policy
+!
+route-policy RP-STD-BOGONS-V4
+  if destination in PS-STD-BOGONS-V4 then
+    drop
+  endif
+end-policy
+!
+route-policy RP-STD-BOGONS-V6
+  if destination in PS-STD-BOGONS-V6 then
+    drop
+  endif
+end-policy
+!
+route-policy RP-STD-PFX-LENGTH-V4
+  if destination in (0.0.0.0/0 ge 25 le 32) then
+    drop
+  endif
+end-policy
+!
+route-policy RP-STD-PFX-LENGTH-V6
+  if destination in (::/0 ge 49 le 128) then
+    drop
+  endif
+end-policy
+!
+route-policy RP-STD-BLACKHOLE-V4
+  # Failsafe : do not blackhole regular prefixes
+  if destination in (0.0.0.0/0 ge 25 le 32) and community matches-any {{ rtbh_community }} then
+    # RFC 7999
+    set community {{ std_blackhole_community }} additive
+    # Pass and stop processing matching routes
+    done
+  endif
+end-policy
+!
+route-policy RP-STD-BLACKHOLE-V6
+  # Failsafe : do not blackhole regular prefixes
+  if destination in (::/0 ge 49 le 128) and community matches-any {{ rtbh_community }} then
+    # RFC 7999
+    set community {{ std_blackhole_community }} additive
+    # Pass and stop processing matching routes
+    done
+  endif
+end-policy
+!
+route-policy RP-STD-EBGP-FILTER-V4
+  apply RP-STD-ASPATH-LENGTH
+  apply RP-STD-BOGONS-ASN
+  apply RP-STD-BOGONS-V4
+  apply RP-STD-PFX-LENGTH-V4
+end-policy
+!
+route-policy RP-STD-EBGP-FILTER-V6
+  apply RP-STD-ASPATH-LENGTH
+  apply RP-STD-BOGONS-ASN
+  apply RP-STD-BOGONS-V6
+  apply RP-STD-PFX-LENGTH-V6
+end-policy
+!
+{% endif %}
+{% if ixp is defined %}
+{# "IN" IXP Policies #}
+route-policy RP-STD-IXP-ATTR-IN($AS)
+  set med 0
+  set large-community ({{ received_from_lcomm }}:$AS) additive
+  if as-path length le 2 then
+    set local-preference {{ ixp_local_pref }}
+  endif
+end-policy
+!
+route-policy RP-STD-IXP-IN-V4($AS, $PREFIX_SET)
+  apply RP-STD-EBGP-FILTER-V4
+  if destination in $PREFIX_SET and as-path passes-through '$AS' then
+    apply RP-STD-IXP-ATTR-IN($AS)
+  endif
+end-policy
+!
+route-policy RP-STD-IXP-IN-V6($AS, $PREFIX_SET)
+  apply RP-STD-EBGP-FILTER-V6
+  if destination in $PREFIX_SET and as-path passes-through '$AS' then
+    apply RP-STD-IXP-ATTR-IN($AS)
+  endif
+end-policy
+!
+route-policy RP-STD-IXP-RS-IN-V4($AS)
+  apply RP-STD-EBGP-FILTER-V4
+  apply RP-STD-IXP-ATTR-IN($AS)
+end-policy
+!
+route-policy RP-STD-IXP-RS-IN-V6($AS)
+  apply RP-STD-EBGP-FILTER-V6
+  apply RP-STD-IXP-ATTR-IN($AS)
+end-policy
+!
+{# "OUT" IXP Policies #}
+route-policy RP-STP-IXP-ATTR-OUT
+  set med 0
+end-policy
+!
+route-policy RP-STD-IXP-OUT-V4($PREFIX_SET)
+  apply RP-STD-BLACKHOLE-V4
+  apply RP-STD-EBGP-FILTER-V4
+  if destination in $PREFIX_SET and community matches-any {{ announce_community }} then
+    apply RP-STP-IXP-ATTR-OUT
+  endif
+end-policy
+!
+route-policy RP-STD-IXP-OUT-V6($PREFIX_SET)
+  apply RP-STD-BLACKHOLE-V6
+  apply RP-STD-EBGP-FILTER-V6
+  if destination in $PREFIX_SET and community matches-any {{ announce_community }} then
+    apply RP-STP-IXP-ATTR-OUT
+  endif
+end-policy
+!
+{% endif %}
+{% if transits is defined %}
+{# "IN" Transit Policies #}
+route-policy RP-STD-TRANSIT-ATTR-IN($AS)
+  set med 0
+  set large-community ({{ received_from_lcomm }}:$AS) additive
+  set local-preference {{ transit_local_pref }}
+  endif
+end-policy
+!
+route-policy RP-STD-TRANSIT-IN-V4($AS)
+  apply RP-STD-EBGP-FILTER-V4
+  apply RP-STD-IXP-ATTR-IN($AS)
+end-policy
+!
+route-policy RP-STD-TRANSIT-IN-V6($AS)
+  apply RP-STD-EBGP-FILTER-V6
+  apply RP-STD-IXP-ATTR-IN($AS)
+end-policy
+!
+{# "OUT" Transit Policies #}
+route-policy RP-STD-TRANSIT-ATTR-OUT($AS)
+  if community matches-any (65500:0) then
+    # DO_NOT_ANNOUNCE
+    drop
+  elseif community matches-any (65500:$AS) then
+    # DO_NOT-ANNOUNCE_TO_$AS
+    drop
+  elseif community matches-any (65502:$AS) then
+    # PREPEND_ONCE_TO_$AS
+    prepend as-path own-as 1
+  elseif community matches-any (65502:$AS) then
+    # PREPEND_TWICE_TO_$AS
+    prepend as-path own-as 2
+  elseif community matches-any (65503:$AS) then
+    # PREPEND_THRICE_TO_$AS
+    prepend as-path own-as 3
+  endif
+  set med 0
+  delete community all
+  delete large-community all
+end-policy
+!
+route-policy RP-STD-TRANSIT-OUT-V4($AS, $PREFIX_SET)
+  apply RP-STD-BLACKHOLE-V4
+  apply RP-STD-EBGP-FILTER-V4
+  if destination in $PREFIX_SET and community matches-any {{ announce_community }} then
+    apply RP-STD-TRANSIT-ATTR-OUT($AS)
+  endif
+end-policy
+!
+route-policy RP-STD-TRANSIT-OUT-V6($AS, $PREFIX_SET)
+  apply RP-STD-BLACKHOLE-V6
+  apply RP-STD-EBGP-FILTER-V6
+  if destination in $PREFIX_SET and community matches-any {{ announce_community }} then
+    apply RP-STD-TRANSIT-ATTR-OUT($AS)
+  endif
+end-policy
+!
+{% endif %}
+
+
+{# START of BGP #}
+router bgp {{ local_as }}
+ nsr
+ bgp router-id {{ router_id }}
+ bgp graceful-restart
+ bgp log neighbor changes detail
+ bgp bestpath as-path multipath-relax
+ address-family ipv4 unicast
+  bgp attribute-download
+ !
+ address-family ipv6 unicast
+  bgp attribute-download
+ !
+{# START neighbor-groups #}
+{# IXP RS neighbor-groups #}
+{% if ixp is defined and ixp is iterable %}
+  {% for ix in ixp %}
+    {% if ix.rs_addresses is defined and ix.rs_addresses is iterable %}
+ neighbor-group NG-RS-{{ ix.shortname | upper }}-V4
+  remote-as {{ ix.rs_asn }}
+  enforce-first-as disable
+  address-family ipv4 unicast
+   send-community-ebgp
+   route-policy RP-STD-IXP-RS-IN-V4({{ ix.rs_asn }}) in
+   route-policy RP-STD-IXP-OUT-V4(PS-IRR-AS{{ local_as }}-V4) out
+   remove-private-AS
+  !
+ !
+ neighbor-group NG-RS-{{ ix.shortname | upper }}-V6
+  remote-as {{ ix.rs_asn }}
+  enforce-first-as disable
+  address-family ipv6 unicast
+   send-community-ebgp
+   route-policy RP-STD-IXP-RS-IN-V6({{ ix.rs_asn }}) in
+   route-policy RP-STD-IXP-OUT-V6(PS-IRR-AS{{ local_as }}-V6) out
+   remove-private-AS
+  !
+ !
+    {% endif %}
+  {% endfor %}
+{# IXP Direct Peers neighbor-groups #}
+{# We might encounter the same AS multiple times if we have multiple IXPs connected to the same router #}
+{# So we keep track of which ones we already iterated through with "seen_asns" #}
+  {% if local_ixp_neighbors is defined and local_ixp_neighbors is iterable %}
+    {%- set seen_asns = [] %}
+    {% for neighbor in local_ixp_neighbors %}
+      {% if neighbor.asn not in seen_asns|unique %}
+ neighbor-group NG-PEER-AS{{ neighbor.asn }}-V4
+  remote-as {{ neighbor.asn }}
+        {% if neighbor.as_set.0 is defined %}
+  description "{{ neighbor.as_set.0 }}"
+        {% endif %}
+  address-family ipv4 unicast
+   send-community-ebgp
+   route-policy RP-STD-IXP-IN-V4({{ neighbor.asn }}, PS-IRR-AS{{ neighbor.asn }}-V4) in
+        {% if neighbor.maxprefix_v4 is defined %}
+   maximum-prefix {{ neighbor.maxprefix_v4 }} {{ maxprefix_warning_threshold }} restart {{ maxprefix_retry }}
+        {% endif %}
+   route-policy RP-STD-IXP-OUT-V4(PS-IRR-AS{{ neighbor.asn }}-V4) out
+   remove-private-AS
+  !
+ !
+ neighbor-group NG-PEER-AS{{ neighbor.asn }}-V6
+  remote-as {{ neighbor.asn }}
+        {% if neighbor.as_set.0 is defined %}
+  description "{{ neighbor.as_set.0 }}"
+        {% endif %}
+  address-family ipv6 unicast
+   send-community-ebgp
+   route-policy RP-STD-IXP-IN-V6({{ neighbor.asn }}, PS-IRR-AS{{ neighbor.asn }}-V6) in
+        {% if neighbor.maxprefix_v6 is defined %}
+   maximum-prefix {{ neighbor.maxprefix_v6 }} {{ maxprefix_warning_threshold }} restart {{ maxprefix_retry }}
+        {% endif %}
+   route-policy RP-STD-IXP-OUT-V6(PS-IRR-AS{{ neighbor.asn }}-V6) out
+   remove-private-AS
+  !
+ !
+      {%- endif %}
+    {{- seen_asns.append(neighbor.asn) }}
+    {% endfor %}
+  {% endif %}
+{% endif %}
+{# Transit neighbor-groups #}
+{% if transits is defined and transits is iterable %}
+  {% for transit in transits %}
+ neighbor-group NG-TRANSIT-{{ transit.shortname | upper }}-V4
+  remote-as {{ transit.asn }}
+  address-family ipv4 unicast
+   send-community-ebgp
+   route-policy RP-STD-TRANSIT-IN-V4({{ transit.asn }}) in
+   route-policy RP-STD-TRANSIT-OUT-V4({{ transit.asn }}, PS-IRR-AS{{ local_as }}-V4) out
+   remove-private-AS
+  !
+ !
+ neighbor-group NG-TRANSIT-{{ transit.shortname | upper }}-V6
+  remote-as {{ transit.asn }}
+  address-family ipv6 unicast
+   send-community-ebgp
+   route-policy RP-STD-TRANSIT-IN-V6({{ transit.asn }}) in
+   route-policy RP-STD-TRANSIT-OUT-V6({{ transit.asn }}, PS-IRR-AS{{ local_as }}-V6) out
+   remove-private-AS
+  !
+ !
+  {% endfor %}
+{% endif %}
+{# END neighbor-groups #}
+{# START neighbors #}
+{# IXP RS neighbors #}
+{% if ixp is defined and ixp is iterable %}
+  {% for ix in ixp %}
+    {% if ix.rs_addresses is defined and ix.rs_addresses is iterable %}
+      {% for address in ix.rs_addresses %}
+ neighbor {{ address }}
+        {% if address | ipv4 %}
+  use neighbor-group NG-RS-{{ ix.shortname | upper }}-V4
+        {% elif address | ipv6 %}
+  use neighbor-group NG-RS-{{ ix.shortname | upper }}-V6
+        {% endif %}
+  description rs_{{ ix.shortname | lower }}
+ !
+      {% endfor %}
+    {% endif %}
+  {% endfor %}
+{# IXP Direct Peers neighbors #}
+  {% for neighbor in local_ixp_neighbors %}
+    {% if neighbor.interfaces is defined and neighbor.interfaces is iterable %}
+      {% for interface in neighbor.interfaces %}
+        {% if interface.ipaddr4 is defined and interface.ipaddr4 | ipv4 %}
+ neighbor {{ interface.ipaddr4 }}
+  use neighbor-group NG-PEER-AS{{ neighbor.asn }}-V4
+          {% if neighbor.as_set.0 is defined and interface.speed is defined %}
+  description "{{ neighbor.as_set.0 }} - {{ interface.speed|int // 1000 }}G interface"
+          {% elif interface.speed is defined %}
+  description "{{ interface.speed|int // 1000 }}G interface"
+          {% endif %}
+ !
+        {% endif %}
+        {% if interface.ipaddr6 is defined and interface.ipaddr6 | ipv6 %}
+ neighbor {{ interface.ipaddr6 }}
+  use neighbor-group NG-PEER-AS{{ neighbor.asn }}-V6
+          {% if neighbor.as_set.0 is defined and interface.speed is defined %}
+  description "{{ neighbor.as_set.0 }} - {{ interface.speed|int // 1000 }}G interface"
+          {% elif interface.speed is defined %}
+  description "{{ interface.speed|int // 1000 }}G interface"
+          {% endif %}
+ !
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+{# Transit neighbors #}
+{% if transits is defined and transits is iterable %}
+  {% for transit in transits %}
+    {% if transit.addresses is defined and transit.addresses is iterable %}
+      {% for address in transit.addresses %}
+ neighbor {{ address }}
+        {% if address | ipv4 %}
+  use neighbor-group NG-TRANSIT-{{ transit.shortname | upper }}-V4
+        {% elif address | ipv6 %}
+  use neighbor-group NG-TRANSIT-{{ transit.shortname | upper }}-V6
+        {% endif %}
+  description transit_{{ transit.shortname | lower }}
+ !
+      {% endfor %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+{# END of BGP #}
+end

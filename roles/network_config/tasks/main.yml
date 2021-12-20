@@ -1,0 +1,27 @@
+---
+  - name: Fetch the complete running config on the device into backup dir
+    iosxr_config:
+      backup: yes
+      backup_options:
+        dir_path: "{{ playbook_dir }}/backup/"
+    tags:
+      - never
+      - backup
+      - replace
+
+  - name: Generate config file
+    delegate_to: localhost
+    template:
+      src: "{{ jinjatemplate }}"
+      dest: "{{ generated_config_location }}"
+    diff: true
+    tags:
+      - local-generate
+      - skipme
+      - generate
+      - diff
+      - copy
+      - verify
+      - replace
+
+# Then copy to device and replace

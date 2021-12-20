@@ -1,0 +1,105 @@
+---
+
+  - name: Get Cymru fullbogons v4
+    uri:
+      url: https://www.team-cymru.org/Services/Bogons/fullbogons-ipv4.txt
+      return_content: true
+    delegate_to: localhost
+    register: bogonv4
+    run_once: true
+
+  - name: Display bogon values
+    debug:
+      msg:
+        - "{{ bogonv4.content.splitlines() | length }} ipv4 fullbogons found"
+#        - "{{ bogonv6.content.splitlines() | length }} ipv6 fullbogons found"
+    run_once: true
+
+  - name: Get peeringDB info for each desirable ASN and IXP
+    peeringdb_getasn:
+      asn: "{{ item.0 }}"
+      ix_id: "{{ item.1.peeringdb_id | int }}"
+#      api_key: "{{ peeringdb_api_key }}"
+    delegate_to: localhost
+    async: 180
+    poll: 0
+    loop: "{{ desirable_ixp_neighbors | product(ixp) }}"
+    loop_control:
+      label: "AS{{ item.0 }} on {{ item.1.name }}"
+    register: peeringdb_task
+    when: ixp is defined and ixp is iterable
+
+  - name: Wait for async peeringDB tasks completion and register results
+    async_status:
+      jid: "{{ item.ansible_job_id }}"
+    delegate_to: localhost
+    retries: 60
+    delay: 3
+    loop: "{{ peeringdb_task.results }}"
+    loop_control:
+      label: "AS{{ item.item.0 }} on {{ item.item.1.name }}"
+    register: peeringdb
+    when: peeringdb_task is defined and ixp is defined and ixp is iterable
+    until: peeringdb.finished
+
+  - name: Filter peeringdb results into local_ixp_neighbors dict and local_ixp_asn list
+    set_fact:
+      local_ixp_neighbors: "{{ local_ixp_neighbors|default([]) + [ helper_dict ] }}"
+      local_ixp_asn: "{{ (local_ixp_asn|default([]) + [ helper_dict.asn ]) | unique }}"
+    delegate_to: localhost
+    loop: "{{ peeringdb.results }}"
+    loop_control:
+      label: "AS{{ item.item.item.0 }} on {{ item.item.item.1.name }}"
+    when: peeringdb is defined and item.message.interfaces is defined # Only neighbors with at least one interface connected to the IXP
+    vars:
+      helper_dict:
+        asn: "{{ item.message.asn }}"
+        maxprefix_v4: "{{ item.message.info_prefixes4|default(omit) }}"
+        maxprefix_v6: "{{ item.message.info_prefixes6|default(omit) }}"
+        interfaces: "{{ item.message.interfaces|default(omit) }}"
+        as_set: "{{ item.message.irr_as_set|default(omit) }}"
+        contact: "{{ item.message.poc_set|default(omit) }}"
+
+  - name: Print the available AS lists
+    debug:
+      msg:
+        - "desired peer AS:         {{ desirable_ixp_neighbors }}"
+        - "AS available locally:    {{ local_ixp_asn }}"
+        - "AS unavailable locally:  {{ desirable_ixp_neighbors | difference(local_ixp_asn) }}"
+    when: local_ixp_asn is defined
+
+  - name: Launch one async bgpq3/4 task per ASN per AF
+    irr_prefix:
+      IPv: "{{ item.1 }}"
+      ASN: "AS{{ item.0 }}"
+      irrd_host: 'rr.ntt.net'
+    delegate_to: localhost
+    async: 180
+    poll: 0
+    loop: "{{ local_ixp_asn | product(['4', '6']) }}"
+    register: irr_task
+    when: local_ixp_asn is defined and local_ixp_asn is iterable
+
+  - name: Wait for async irr tasks completion and register results
+    async_status:
+      jid: "{{ item.ansible_job_id }}"
+    delegate_to: localhost
+    retries: 60
+    delay: 3
+    loop: "{{ irr_task.results }}"
+    loop_control:
+      label: "{{ item.item }}"
+    register: irr
+    when: irr_task is defined and local_ixp_asn is defined and local_ixp_asn is iterable
+    until: irr.finished
+
+  - name: Generate local AS{{ local_as }} bgpq3/4 results
+    irr_prefix:
+      IPv: "{{ item }}"
+      ASN: "AS{{ local_as }}"
+      aggregate: False
+      irrd_host: 'rr.ntt.net'
+    delegate_to: localhost
+    loop: "{{ ['4', '6'] }}"
+    register: local_as_irr
+    when: ixp is defined or transit is defined

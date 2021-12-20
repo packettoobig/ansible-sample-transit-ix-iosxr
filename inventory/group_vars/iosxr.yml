@@ -1,0 +1,35 @@
+---
+jinjatemplate: "configuration_template_iosxr.j2"
+
+generated_config_location: "{{ playbook_dir }}/configurations/{{ inventory_hostname }}"
+
+# Replace me with your actual ASN
+local_as: 65000 
+
+transit_local_pref: 100
+ixp_local_pref: 300
+
+# In %
+maxprefix_warning_threshold: "75"
+# In minutes
+maxprefix_retry: "60"
+
+std_blackhole_community: "BLACKHOLE"
+rtbh_community: "LOCALRTBH"
+announce_community: "ANNOUNCE"
+
+bgp_communities:
+    -
+        community: "{{ local_as }}:1"
+        name: "{{ announce_community }}"
+        description: "BGP Announcements"
+    -
+        community: "65535:666"
+        name: "{{ std_blackhole_community }}"
+        description: "Well-known: blackhole, Nullroute (RFC7999)"
+    -
+        community: "{{ local_as }}:666"
+        name: "{{ rtbh_community }}"
+        description: "STD - Remotely Triggered BlackHoling"
+
+received_from_lcomm: "{{ local_as }}:2"
